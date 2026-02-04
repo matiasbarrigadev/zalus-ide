@@ -140,6 +140,8 @@ export default function IDEPage() {
     }
   }
 
+  const [streamingContent, setStreamingContent] = useState('')
+
   const sendMessage = async () => {
     if (!inputMessage.trim() || isAgentWorking) return
 
@@ -147,6 +149,7 @@ export default function IDEPage() {
     setInputMessage('')
     addMessage({ role: 'user', content: userMessage })
     setIsAgentWorking(true)
+    setStreamingContent('')
 
     try {
       const response = await fetch('/api/agent', {
@@ -163,16 +166,30 @@ export default function IDEPage() {
         }),
       })
 
-      if (response.ok) {
-        const data = await response.json()
-        addMessage({ role: 'assistant', content: data.response })
-        // Refresh file tree and deployment status after agent action
+      if (response.ok && response.body) {
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let fullContent = ''
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          
+          const text = decoder.decode(value)
+          fullContent += text
+          setStreamingContent(fullContent)
+        }
+
+        addMessage({ role: 'assistant', content: fullContent })
+        setStreamingContent('')
+        // Refresh file tree after agent action
         loadFileTree()
         loadDeploymentStatus()
       } else {
+        const errorData = await response.json().catch(() => ({}))
         addMessage({ 
           role: 'assistant', 
-          content: 'Lo siento, hubo un error al procesar tu solicitud. Por favor intenta de nuevo.' 
+          content: `Error: ${errorData.error || 'Hubo un error al procesar tu solicitud.'}` 
         })
       }
     } catch (error) {
@@ -183,6 +200,7 @@ export default function IDEPage() {
       })
     } finally {
       setIsAgentWorking(false)
+      setStreamingContent('')
     }
   }
 
@@ -391,15 +409,19 @@ export default function IDEPage() {
             )}
             {isAgentWorking && (
               <div className="flex gap-3">
-                <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center">
+                <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center flex-shrink-0">
                   <Bot className="w-4 h-4" />
                 </div>
-                <div className="bg-muted rounded-lg p-3">
-                  <div className="flex gap-1">
-                    <span className="w-2 h-2 bg-foreground/50 rounded-full typing-dot" />
-                    <span className="w-2 h-2 bg-foreground/50 rounded-full typing-dot" />
-                    <span className="w-2 h-2 bg-foreground/50 rounded-full typing-dot" />
-                  </div>
+                <div className="flex-1 bg-muted rounded-lg p-3 text-sm">
+                  {streamingContent ? (
+                    <p className="whitespace-pre-wrap">{streamingContent}</p>
+                  ) : (
+                    <div className="flex gap-1">
+                      <span className="w-2 h-2 bg-foreground/50 rounded-full typing-dot" />
+                      <span className="w-2 h-2 bg-foreground/50 rounded-full typing-dot" />
+                      <span className="w-2 h-2 bg-foreground/50 rounded-full typing-dot" />
+                    </div>
+                  )}
                 </div>
               </div>
             )}
