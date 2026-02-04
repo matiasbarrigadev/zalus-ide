@@ -10,7 +10,7 @@ const bedrock = createAmazonBedrock({
 })
 
 // Model - Claude Opus 4.5
-export const model = bedrock('us.anthropic.claude-4-5-opus-20251101-v1:0')
+export const model = bedrock('global.anthropic.claude-4-5-opus-20251101-v1:0')
 
 // Re-export for convenience
 export { generateText, streamText, tool, z }
