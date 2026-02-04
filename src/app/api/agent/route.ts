@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '../auth/[...nextauth]/route'
-import { model, generateText } from '@/lib/bedrock'
+import { model, streamText } from '@/lib/bedrock'
 import { getSystemPrompt, formatProjectContext } from '@/lib/agent/prompts'
 import * as github from '@/lib/github'
 import { createVercelClient } from '@/lib/vercel'
@@ -31,6 +31,7 @@ Available tools:
 
 After using tools, continue your response. You can use multiple tools.
 When you're done, provide your final response without tool calls.
+IMPORTANT: Give a final response to the user after analyzing the project.
 `
 
 interface ToolCall {
@@ -68,7 +69,7 @@ async function executeTools(toolCalls: ToolCall[], octokit: any, owner: string, 
           results.push({
             tool: 'read_file',
             success: true,
-            result: { path: call.params.path, content: content.substring(0, 8000) }
+            result: { path: call.params.path, content: content.substring(0, 4000) }
           })
           break
         }
@@ -95,7 +96,7 @@ async function executeTools(toolCalls: ToolCall[], octokit: any, owner: string, 
           results.push({
             tool: 'search_code',
             success: true,
-            result: searchResults.slice(0, 10)
+            result: searchResults.slice(0, 5)
           })
           break
         }
@@ -148,7 +149,7 @@ export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions)
     if (!session?.accessToken) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 })
     }
 
     const body = await request.json()
@@ -187,72 +188,115 @@ export async function POST(request: NextRequest) {
 
     const systemPrompt = getSystemPrompt(projectContext) + TOOLS_DESCRIPTION + repoContext + deploymentContext
 
-    // Agent loop - process tool calls iteratively
-    const allToolCalls: Array<{ call: ToolCall; result: ToolResult }> = []
-    let reasoning = ''
-    let finalResponse = ''
-    let iterations = 0
-    const maxIterations = 3 // Reduced to avoid timeout
+    // Create SSE stream
+    const encoder = new TextEncoder()
+    const stream = new TransformStream()
+    const writer = stream.writable.getWriter()
 
-    const messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
-      ...conversationHistory.map((m: { role: string; content: string }) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-      { role: 'user', content: message },
-    ]
-
-    while (iterations < maxIterations) {
-      iterations++
-
-      const result = await generateText({
-        model,
-        system: systemPrompt,
-        messages,
-      })
-
-      const responseText = result.text
-      reasoning += `\n[Iteration ${iterations}]\n${responseText}\n`
-
-      const { toolCalls, cleanText } = parseToolCalls(responseText)
-
-      if (toolCalls.length === 0) {
-        // No more tool calls, this is the final response
-        finalResponse = cleanText || responseText
-        break
-      }
-
-      // If we're at the last iteration, use whatever text we have
-      if (iterations >= maxIterations) {
-        finalResponse = cleanText || 'He analizado el proyecto y ejecutado las herramientas necesarias. ¿En qué más puedo ayudarte?'
-        break
-      }
-
-      // Execute tools
-      const toolResults = await executeTools(toolCalls, octokit, owner, repo)
-
-      for (let i = 0; i < toolCalls.length; i++) {
-        allToolCalls.push({
-          call: toolCalls[i],
-          result: toolResults[i]
-        })
-      }
-
-      // Add tool results to conversation
-      const toolResultsMessage = toolResults.map((r, i) => 
-        `Tool: ${toolCalls[i].tool}\nResult: ${JSON.stringify(r.result || r.error, null, 2)}`
-      ).join('\n\n')
-
-      messages.push({ role: 'assistant', content: responseText })
-      messages.push({ role: 'user', content: `Tool results:\n${toolResultsMessage}\n\nContinue with your response.` })
+    const sendEvent = async (event: string, data: unknown) => {
+      await writer.write(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
     }
 
-    return NextResponse.json({
-      response: finalResponse,
-      reasoning: reasoning.trim(),
-      toolCalls: allToolCalls,
-      iterations,
+    // Start processing in background
+    ;(async () => {
+      try {
+        const allToolCalls: Array<{ call: ToolCall; result: ToolResult }> = []
+        let iterations = 0
+        const maxIterations = 3
+
+        const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
+          ...conversationHistory.map((m: { role: string; content: string }) => ({ 
+            role: m.role as 'user' | 'assistant', 
+            content: m.content 
+          })),
+          { role: 'user', content: message },
+        ]
+
+        while (iterations < maxIterations) {
+          iterations++
+          await sendEvent('iteration', { iteration: iterations })
+
+          // Stream text
+          const result = streamText({
+            model,
+            system: systemPrompt,
+            messages,
+          })
+
+          let fullText = ''
+          
+          // Stream the response text
+          for await (const chunk of result.textStream) {
+            fullText += chunk
+            await sendEvent('text', { text: chunk })
+          }
+
+          const { toolCalls, cleanText } = parseToolCalls(fullText)
+
+          if (toolCalls.length === 0) {
+            // No more tool calls, this is the final response
+            await sendEvent('done', { response: cleanText || fullText })
+            break
+          }
+
+          // Send tool calls
+          await sendEvent('tool_calls', { tools: toolCalls })
+
+          // Execute tools
+          const toolResults = await executeTools(toolCalls, octokit, owner, repo)
+
+          for (let i = 0; i < toolCalls.length; i++) {
+            allToolCalls.push({
+              call: toolCalls[i],
+              result: toolResults[i]
+            })
+            await sendEvent('tool_result', { 
+              call: toolCalls[i], 
+              result: toolResults[i] 
+            })
+          }
+
+          // If we're at the last iteration, send what we have
+          if (iterations >= maxIterations) {
+            await sendEvent('done', { 
+              response: cleanText || 'He analizado el proyecto. ¿En qué puedo ayudarte?' 
+            })
+            break
+          }
+
+          // Add tool results to conversation
+          const toolResultsMessage = toolResults.map((r, i) => 
+            `Tool: ${toolCalls[i].tool}\nResult: ${JSON.stringify(r.result || r.error, null, 2)}`
+          ).join('\n\n')
+
+          messages.push({ role: 'assistant', content: fullText })
+          messages.push({ role: 'user', content: `Tool results:\n${toolResultsMessage}\n\nNow give a concise response.` })
+        }
+
+        // Send final summary
+        await sendEvent('complete', { 
+          toolCalls: allToolCalls,
+          iterations 
+        })
+      } catch (error) {
+        await sendEvent('error', { 
+          error: error instanceof Error ? error.message : 'Unknown error' 
+        })
+      } finally {
+        await writer.close()
+      }
+    })()
+
+    return new Response(stream.readable, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
     })
   } catch (error) {
     console.error('Agent error:', error)
     const msg = error instanceof Error ? error.message : 'Unknown error'
-    return NextResponse.json({ error: msg }, { status: 500 })
+    return new Response(JSON.stringify({ error: msg }), { status: 500 })
   }
 }

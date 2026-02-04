@@ -151,11 +151,18 @@ export default function IDEPage() {
     }
   }
 
+  const [streamingText, setStreamingText] = useState('')
+  const [streamingToolCalls, setStreamingToolCalls] = useState<ToolExecution[]>([])
+  const [currentIteration, setCurrentIteration] = useState(0)
+
   const sendMessage = async () => {
     if (!inputMessage.trim() || isAgentWorking) return
 
     const userMessage = inputMessage.trim()
     setInputMessage('')
+    setStreamingText('')
+    setStreamingToolCalls([])
+    setCurrentIteration(0)
     
     const userMsg: AgentMessage = {
       id: crypto.randomUUID(),
@@ -180,28 +187,79 @@ export default function IDEPage() {
         }),
       })
 
-      if (response.ok) {
-        const data = await response.json()
-        const assistantMsg: AgentMessage = {
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          content: data.response,
-          reasoning: data.reasoning,
-          toolCalls: data.toolCalls,
-          iterations: data.iterations,
-        }
-        setMessages(prev => [...prev, assistantMsg])
-        loadFileTree()
-        loadDeploymentStatus()
-      } else {
-        const errorData = await response.json().catch(() => ({}))
-        const errorMsg: AgentMessage = {
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          content: `Error: ${errorData.error || 'Hubo un error al procesar tu solicitud.'}`,
-        }
-        setMessages(prev => [...prev, errorMsg])
+      if (!response.ok || !response.body) {
+        throw new Error('Failed to connect')
       }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let finalResponse = ''
+      const toolCalls: ToolExecution[] = []
+      let iterations = 0
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        
+        // Parse SSE events
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i]
+          
+          if (line.startsWith('event: ')) {
+            const eventType = line.slice(7)
+            const dataLine = lines[i + 1]
+            
+            if (dataLine?.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(dataLine.slice(6))
+                
+                switch (eventType) {
+                  case 'text':
+                    setStreamingText(prev => prev + data.text)
+                    break
+                  case 'iteration':
+                    setCurrentIteration(data.iteration)
+                    iterations = data.iteration
+                    break
+                  case 'tool_result':
+                    setStreamingToolCalls(prev => [...prev, { call: data.call, result: data.result }])
+                    toolCalls.push({ call: data.call, result: data.result })
+                    break
+                  case 'done':
+                    finalResponse = data.response
+                    break
+                  case 'error':
+                    finalResponse = `Error: ${data.error}`
+                    break
+                }
+              } catch {
+                // Skip invalid JSON
+              }
+              i++ // Skip the data line we just processed
+            }
+          }
+        }
+      }
+
+      // Add final message
+      const assistantMsg: AgentMessage = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: finalResponse || 'Completado',
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        iterations: iterations > 0 ? iterations : undefined,
+      }
+      setMessages(prev => [...prev, assistantMsg])
+      setStreamingText('')
+      setStreamingToolCalls([])
+      loadFileTree()
+      loadDeploymentStatus()
     } catch (error) {
       console.error('Error sending message:', error)
       const errorMsg: AgentMessage = {
@@ -473,12 +531,59 @@ export default function IDEPage() {
                 <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center flex-shrink-0">
                   <Bot className="w-4 h-4" />
                 </div>
-                <div className="bg-muted rounded-lg p-3">
-                  <div className="flex gap-1">
-                    <span className="w-2 h-2 bg-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                    <span className="w-2 h-2 bg-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                    <span className="w-2 h-2 bg-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                  </div>
+                <div className="flex-1 space-y-2">
+                  {/* Iteration indicator */}
+                  {currentIteration > 0 && (
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      <span>Iteración {currentIteration}/3</span>
+                    </div>
+                  )}
+
+                  {/* Streaming text */}
+                  {streamingText && (
+                    <div className="bg-muted rounded-lg p-3 text-sm">
+                      <p className="whitespace-pre-wrap">{streamingText}</p>
+                      <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1" />
+                    </div>
+                  )}
+
+                  {/* Streaming tool calls */}
+                  {streamingToolCalls.length > 0 && (
+                    <div className="border border-border rounded-lg overflow-hidden">
+                      <div className="flex items-center gap-2 p-2 text-sm bg-muted/50">
+                        <Wrench className="w-4 h-4 text-blue-400" />
+                        <span className="font-medium">Tools ({streamingToolCalls.length})</span>
+                        <Loader2 className="w-3 h-3 animate-spin ml-auto" />
+                      </div>
+                      <div className="p-2 space-y-2 text-xs max-h-48 overflow-auto">
+                        {streamingToolCalls.map((tc, i) => (
+                          <div key={i} className="flex items-center gap-2">
+                            {tc.result.success ? (
+                              <CheckCircle className="w-3 h-3 text-green-500" />
+                            ) : (
+                              <XCircle className="w-3 h-3 text-red-500" />
+                            )}
+                            <span className="font-medium">{tc.call.tool}</span>
+                            <span className="text-muted-foreground truncate">
+                              {JSON.stringify(tc.call.params).substring(0, 30)}...
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Loading dots if no content yet */}
+                  {!streamingText && streamingToolCalls.length === 0 && (
+                    <div className="bg-muted rounded-lg p-3">
+                      <div className="flex gap-1">
+                        <span className="w-2 h-2 bg-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="w-2 h-2 bg-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="w-2 h-2 bg-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
