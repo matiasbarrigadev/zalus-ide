@@ -265,7 +265,7 @@ export async function searchInRepository(
 
   return data.items.map((item) => ({
     path: item.path,
-    matches: item.text_matches?.map((m) => m.fragment) || [],
+    matches: item.text_matches?.map((m) => m.fragment).filter((f): f is string => Boolean(f)) || [],
   }))
 }
 

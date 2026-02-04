@@ -1,6 +1,14 @@
 import NextAuth, { NextAuthOptions } from 'next-auth'
 import GithubProvider from 'next-auth/providers/github'
 
+interface GithubProfile {
+  id: number
+  login: string
+  name: string | null
+  email: string | null
+  avatar_url: string
+}
+
 export const authOptions: NextAuthOptions = {
   providers: [
     GithubProvider({
@@ -18,7 +26,8 @@ export const authOptions: NextAuthOptions = {
       // Persist the OAuth access_token to the token right after signin
       if (account) {
         token.accessToken = account.access_token
-        token.githubId = profile?.id
+        const githubProfile = profile as GithubProfile | undefined
+        token.githubId = githubProfile?.id?.toString()
       }
       return token
     },
