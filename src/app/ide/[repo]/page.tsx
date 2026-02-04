@@ -426,13 +426,13 @@ export default function IDEPage() {
                                   )}
                                   <span className="font-medium">{tc.call.tool}</span>
                                 </div>
-                                <div className="text-muted-foreground">
+                                <div className="text-muted-foreground overflow-hidden">
                                   <div className="font-medium text-foreground">Call:</div>
-                                  <pre className="bg-background p-1 rounded overflow-auto max-h-20">{JSON.stringify(tc.call.params, null, 2)}</pre>
+                                  <pre className="bg-background p-1 rounded overflow-x-auto max-h-20 text-[10px] whitespace-pre-wrap break-all">{JSON.stringify(tc.call.params, null, 2)}</pre>
                                 </div>
-                                <div className="text-muted-foreground">
+                                <div className="text-muted-foreground overflow-hidden">
                                   <div className="font-medium text-foreground">Result:</div>
-                                  <pre className="bg-background p-1 rounded overflow-auto max-h-32">
+                                  <pre className="bg-background p-1 rounded overflow-x-auto max-h-32 text-[10px] whitespace-pre-wrap break-all">
                                     {tc.result.error || JSON.stringify(tc.result.result, null, 2)}
                                   </pre>
                                 </div>
