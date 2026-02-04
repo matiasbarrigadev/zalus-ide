@@ -219,6 +219,12 @@ export async function POST(request: NextRequest) {
         break
       }
 
+      // If we're at the last iteration, use whatever text we have
+      if (iterations >= maxIterations) {
+        finalResponse = cleanText || 'He analizado el proyecto y ejecutado las herramientas necesarias. ¿En qué más puedo ayudarte?'
+        break
+      }
+
       // Execute tools
       const toolResults = await executeTools(toolCalls, octokit, owner, repo)
 
