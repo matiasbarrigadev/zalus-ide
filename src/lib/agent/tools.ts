@@ -1,9 +1,20 @@
-import { Tool } from '../bedrock'
-
 /**
- * Agent tools for interacting with GitHub and Vercel
+ * Agent tools definition for reference
+ * These are kept for documentation but are no longer used directly
+ * with the AI SDK implementation
  */
-export const agentTools: Tool[] = [
+
+export interface ToolDefinition {
+  name: string
+  description: string
+  input_schema: {
+    type: 'object'
+    properties: Record<string, unknown>
+    required?: string[]
+  }
+}
+
+export const agentTools: ToolDefinition[] = [
   {
     name: 'list_repository_files',
     description:
@@ -36,27 +47,13 @@ export const agentTools: Tool[] = [
   {
     name: 'write_files',
     description:
-      'Crea o modifica múltiples archivos en el repositorio con un solo commit. Ideal para cambios que afectan varios archivos.',
+      'Crea o modifica múltiples archivos en el repositorio con un solo commit.',
     input_schema: {
       type: 'object',
       properties: {
         files: {
           type: 'array',
           description: 'Array de archivos a crear/modificar',
-          items: {
-            type: 'object',
-            properties: {
-              path: {
-                type: 'string',
-                description: 'Ruta del archivo',
-              },
-              content: {
-                type: 'string',
-                description: 'Contenido completo del archivo',
-              },
-            },
-            required: ['path', 'content'],
-          },
         },
         commit_message: {
           type: 'string',
@@ -79,7 +76,6 @@ export const agentTools: Tool[] = [
         paths: {
           type: 'array',
           description: 'Array de rutas de archivos a eliminar',
-          items: { type: 'string' },
         },
         commit_message: {
           type: 'string',
@@ -92,7 +88,7 @@ export const agentTools: Tool[] = [
   {
     name: 'search_in_repository',
     description:
-      'Busca texto o código en el repositorio. Útil para encontrar implementaciones o referencias.',
+      'Busca texto o código en el repositorio.',
     input_schema: {
       type: 'object',
       properties: {
@@ -102,7 +98,7 @@ export const agentTools: Tool[] = [
         },
         file_pattern: {
           type: 'string',
-          description: 'Patrón de archivos a buscar (ej: *.tsx, *.ts)',
+          description: 'Patrón de archivos a buscar',
         },
       },
       required: ['query'],
@@ -111,30 +107,16 @@ export const agentTools: Tool[] = [
   {
     name: 'get_deployment_status',
     description:
-      'Obtiene el estado del deployment más reciente en Vercel. Incluye URL del preview.',
+      'Obtiene el estado del deployment más reciente en Vercel.',
     input_schema: {
       type: 'object',
       properties: {},
     },
   },
   {
-    name: 'get_deployment_logs',
-    description:
-      'Obtiene los logs de build de un deployment específico de Vercel. Útil para debuggear errores de build.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        deployment_id: {
-          type: 'string',
-          description: 'ID del deployment (opcional, usa el más reciente si no se especifica)',
-        },
-      },
-    },
-  },
-  {
     name: 'create_branch',
     description:
-      'Crea una nueva rama en el repositorio basada en la rama principal.',
+      'Crea una nueva rama en el repositorio.',
     input_schema: {
       type: 'object',
       properties: {
@@ -153,7 +135,7 @@ export const agentTools: Tool[] = [
   {
     name: 'create_pull_request',
     description:
-      'Crea un Pull Request desde una rama feature hacia la rama principal.',
+      'Crea un Pull Request desde una rama feature.',
     input_schema: {
       type: 'object',
       properties: {
@@ -161,17 +143,13 @@ export const agentTools: Tool[] = [
           type: 'string',
           description: 'Título del Pull Request',
         },
-        body: {
-          type: 'string',
-          description: 'Descripción del Pull Request',
-        },
         head_branch: {
           type: 'string',
           description: 'Rama con los cambios',
         },
         base_branch: {
           type: 'string',
-          description: 'Rama destino (por defecto: main)',
+          description: 'Rama destino',
         },
       },
       required: ['title', 'head_branch'],
@@ -186,6 +164,5 @@ export type ToolName =
   | 'delete_files'
   | 'search_in_repository'
   | 'get_deployment_status'
-  | 'get_deployment_logs'
   | 'create_branch'
   | 'create_pull_request'

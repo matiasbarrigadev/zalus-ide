@@ -1,6 +1,7 @@
+// This file is kept for backward compatibility but is no longer used
+// with the new AI SDK implementation
+
 import { Octokit } from '@octokit/rest'
-import { ToolUse } from '../bedrock'
-import { ToolName } from './tools'
 import * as github from '../github'
 import { createVercelClient } from '../vercel'
 
@@ -18,8 +19,16 @@ export interface ToolResult {
   error?: string
 }
 
+export interface ToolUse {
+  type: 'tool_use'
+  id: string
+  name: string
+  input: Record<string, unknown>
+}
+
 /**
  * Execute a tool call and return the result
+ * @deprecated This function is no longer used with the AI SDK
  */
 export async function executeToolCall(
   toolCall: ToolUse,
@@ -31,7 +40,7 @@ export async function executeToolCall(
     teamId: context.vercelTeamId,
   })
 
-  const toolName = toolCall.name as ToolName
+  const toolName = toolCall.name
   const input = toolCall.input
 
   try {
@@ -132,7 +141,6 @@ export async function executeToolCall(
       }
 
       case 'get_deployment_status': {
-        // Find Vercel project linked to this repo
         const projects = await vercel.listProjects()
         const project = projects.find(
           (p) => p.link?.repo === `${context.owner}/${context.repo}`
@@ -162,49 +170,6 @@ export async function executeToolCall(
             url: `https://${deployment.url}`,
             createdAt: new Date(deployment.createdAt).toISOString(),
             commit: deployment.meta?.githubCommitMessage,
-          },
-        }
-      }
-
-      case 'get_deployment_logs': {
-        const deploymentId = input.deployment_id as string | undefined
-
-        // Find Vercel project linked to this repo
-        const projects = await vercel.listProjects()
-        const project = projects.find(
-          (p) => p.link?.repo === `${context.owner}/${context.repo}`
-        )
-
-        if (!project) {
-          return {
-            success: false,
-            error: 'No se encontró un proyecto de Vercel vinculado a este repositorio',
-          }
-        }
-
-        let targetDeploymentId = deploymentId
-        if (!targetDeploymentId) {
-          const deployment = await vercel.getLatestDeployment(project.id)
-          if (!deployment) {
-            return {
-              success: false,
-              error: 'No hay deployments para obtener logs',
-            }
-          }
-          targetDeploymentId = deployment.id
-        }
-
-        const logs = await vercel.getDeploymentLogs(targetDeploymentId)
-
-        return {
-          success: true,
-          result: {
-            deploymentId: targetDeploymentId,
-            logs: logs.slice(-50).map((l) => ({
-              type: l.type,
-              text: l.text,
-              time: new Date(l.created).toISOString(),
-            })),
           },
         }
       }
