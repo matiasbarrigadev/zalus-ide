@@ -192,7 +192,7 @@ export async function POST(request: NextRequest) {
     let reasoning = ''
     let finalResponse = ''
     let iterations = 0
-    const maxIterations = 5
+    const maxIterations = 3 // Reduced to avoid timeout
 
     const messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
       ...conversationHistory.map((m: { role: string; content: string }) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
