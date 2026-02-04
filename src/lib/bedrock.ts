@@ -9,8 +9,8 @@ const bedrock = createAmazonBedrock({
   secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
 })
 
-// Model - Claude 3.5 Sonnet v2
-export const model = bedrock('anthropic.claude-3-5-sonnet-20241022-v2:0')
+// Model - Claude Opus 4.5
+export const model = bedrock('anthropic.claude-opus-4-5-20251101-v1:0')
 
 // Re-export for convenience
 export { generateText, streamText, tool, z }
