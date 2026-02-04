@@ -35,11 +35,9 @@ export async function POST(request: NextRequest) {
     // Create GitHub client for context
     const octokit = github.createGitHubClient(session.accessToken)
     
-    // Create Vercel client
-    const vercel = createVercelClient({
-      token: process.env.VERCEL_TOKEN!,
-      teamId: process.env.VERCEL_TEAM_ID,
-    })
+    // Create Vercel client only if user has connected Vercel
+    const vercelToken = session.vercelAccessToken
+    const vercel = vercelToken ? createVercelClient({ token: vercelToken }) : null
 
     // Get repo files for context
     let repoContext = ''
@@ -50,19 +48,21 @@ export async function POST(request: NextRequest) {
       repoContext = '\n\n(No se pudieron cargar los archivos del repositorio)'
     }
 
-    // Get deployment status
+    // Get deployment status (only if Vercel is connected)
     let deploymentContext = ''
-    try {
-      const projects = await vercel.listProjects()
-      const project = projects.find((p) => p.link?.repo === `${owner}/${repo}`)
-      if (project) {
-        const deployment = await vercel.getLatestDeployment(project.id)
-        if (deployment) {
-          deploymentContext = `\n\nDeployment actual: ${deployment.state} - https://${deployment.url}`
+    if (vercel) {
+      try {
+        const projects = await vercel.listProjects()
+        const project = projects.find((p) => p.link?.repo === `${owner}/${repo}`)
+        if (project) {
+          const deployment = await vercel.getLatestDeployment(project.id)
+          if (deployment) {
+            deploymentContext = `\n\nDeployment actual: ${deployment.state} - https://${deployment.url}`
+          }
         }
+      } catch {
+        // Ignore deployment errors
       }
-    } catch {
-      // Ignore deployment errors
     }
 
     // Get system prompt with context

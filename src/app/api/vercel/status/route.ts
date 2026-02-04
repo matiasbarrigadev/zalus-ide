@@ -18,14 +18,19 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Missing owner or repo' }, { status: 400 })
     }
 
-    const vercelToken = process.env.VERCEL_TOKEN
+    // Use user's Vercel token if available, otherwise return gracefully
+    const vercelToken = session.vercelAccessToken
     if (!vercelToken) {
-      return NextResponse.json({ error: 'Vercel not configured' }, { status: 500 })
+      return NextResponse.json({ 
+        project: null, 
+        deployment: null,
+        vercelConnected: false,
+        message: 'Vercel account not connected. Connect Vercel to see deployment status.' 
+      })
     }
 
     const vercel = createVercelClient({
       token: vercelToken,
-      teamId: process.env.VERCEL_TEAM_ID,
     })
 
     // Find project linked to this repo
@@ -36,6 +41,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ 
         project: null, 
         deployment: null,
+        vercelConnected: true,
         message: 'No Vercel project linked to this repository' 
       })
     }
@@ -54,9 +60,13 @@ export async function GET(request: NextRequest) {
         url: deployment.url,
         createdAt: deployment.createdAt,
       } : null,
+      vercelConnected: true,
     })
   } catch (error) {
     console.error('Error fetching Vercel status:', error)
-    return NextResponse.json({ error: 'Failed to fetch Vercel status' }, { status: 500 })
+    return NextResponse.json({ 
+      error: 'Failed to fetch Vercel status',
+      vercelConnected: false,
+    }, { status: 500 })
   }
 }
