@@ -13,8 +13,8 @@ const bedrockConfig = {
   },
 }
 
-// Model ID for Claude Opus 4.5
-const MODEL_ID = 'anthropic.claude-opus-4-5-20251101-v1:0'
+// Model ID for Claude 3.5 Sonnet (más ampliamente disponible)
+const MODEL_ID = 'anthropic.claude-3-5-sonnet-20241022-v2:0'
 
 // Create Bedrock client
 const bedrockClient = new BedrockRuntimeClient(bedrockConfig)
