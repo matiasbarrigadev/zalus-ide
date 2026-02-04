@@ -1,18 +1,154 @@
-import { NextRequest } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '../auth/[...nextauth]/route'
-import { model, streamText } from '@/lib/bedrock'
+import { model, generateText } from '@/lib/bedrock'
 import { getSystemPrompt, formatProjectContext } from '@/lib/agent/prompts'
 import * as github from '@/lib/github'
 import { createVercelClient } from '@/lib/vercel'
 
 export const maxDuration = 60
 
+// Tool definitions for the agent
+const TOOLS_DESCRIPTION = `
+You have access to these tools. To use a tool, output a JSON block like this:
+<tool_call>
+{"tool": "tool_name", "params": {...}}
+</tool_call>
+
+Available tools:
+
+1. list_files - List files in a directory
+   params: { "path": "optional/path" }
+
+2. read_file - Read content of a file
+   params: { "path": "file/path" }
+
+3. write_file - Create or modify a file (creates a commit)
+   params: { "path": "file/path", "content": "file content", "message": "commit message" }
+
+4. search_code - Search for code patterns
+   params: { "query": "search text" }
+
+After using tools, continue your response. You can use multiple tools.
+When you're done, provide your final response without tool calls.
+`
+
+interface ToolCall {
+  tool: string
+  params: Record<string, string>
+}
+
+interface ToolResult {
+  tool: string
+  success: boolean
+  result?: unknown
+  error?: string
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function executeTools(toolCalls: ToolCall[], octokit: any, owner: string, repo: string): Promise<ToolResult[]> {
+  const results: ToolResult[] = []
+
+  for (const call of toolCalls) {
+    try {
+      switch (call.tool) {
+        case 'list_files': {
+          const path = call.params.path || ''
+          const files = await github.listRepositoryFiles(octokit, owner, repo, path)
+          results.push({
+            tool: 'list_files',
+            success: true,
+            result: files.map(f => ({ name: f.name, path: f.path, type: f.type }))
+          })
+          break
+        }
+
+        case 'read_file': {
+          const content = await github.readFile(octokit, owner, repo, call.params.path)
+          results.push({
+            tool: 'read_file',
+            success: true,
+            result: { path: call.params.path, content: content.substring(0, 8000) }
+          })
+          break
+        }
+
+        case 'write_file': {
+          const writeResult = await github.writeFiles(
+            octokit,
+            owner,
+            repo,
+            [{ path: call.params.path, content: call.params.content }],
+            call.params.message || 'Update file',
+            'main'
+          )
+          results.push({
+            tool: 'write_file',
+            success: true,
+            result: { path: call.params.path, sha: writeResult.sha }
+          })
+          break
+        }
+
+        case 'search_code': {
+          const searchResults = await github.searchInRepository(octokit, owner, repo, call.params.query)
+          results.push({
+            tool: 'search_code',
+            success: true,
+            result: searchResults.slice(0, 10)
+          })
+          break
+        }
+
+        default:
+          results.push({
+            tool: call.tool,
+            success: false,
+            error: `Unknown tool: ${call.tool}`
+          })
+      }
+    } catch (error) {
+      results.push({
+        tool: call.tool,
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      })
+    }
+  }
+
+  return results
+}
+
+function parseToolCalls(text: string): { toolCalls: ToolCall[], cleanText: string } {
+  const toolCalls: ToolCall[] = []
+  let cleanText = text
+
+  const regex = /<tool_call>\s*(\{[\s\S]*?\})\s*<\/tool_call>/g
+  let match
+
+  while ((match = regex.exec(text)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1])
+      if (parsed.tool) {
+        toolCalls.push({
+          tool: parsed.tool,
+          params: parsed.params || {}
+        })
+      }
+      cleanText = cleanText.replace(match[0], '')
+    } catch {
+      // Invalid JSON, skip
+    }
+  }
+
+  return { toolCalls, cleanText: cleanText.trim() }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions)
     if (!session?.accessToken) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 })
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
     const body = await request.json()
@@ -49,25 +185,68 @@ export async function POST(request: NextRequest) {
       } catch { /* ignore */ }
     }
 
-    const systemPrompt = getSystemPrompt(projectContext) + repoContext + deploymentContext
+    const systemPrompt = getSystemPrompt(projectContext) + TOOLS_DESCRIPTION + repoContext + deploymentContext
 
-    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
-      ...conversationHistory,
+    // Agent loop - process tool calls iteratively
+    const allToolCalls: Array<{ call: ToolCall; result: ToolResult }> = []
+    let reasoning = ''
+    let finalResponse = ''
+    let iterations = 0
+    const maxIterations = 5
+
+    const messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
+      ...conversationHistory.map((m: { role: string; content: string }) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
       { role: 'user', content: message },
     ]
 
-    // Stream text response
-    const result = streamText({
-      model,
-      system: systemPrompt,
-      messages,
-    })
+    while (iterations < maxIterations) {
+      iterations++
 
-    // Return streaming response
-    return result.toTextStreamResponse()
+      const result = await generateText({
+        model,
+        system: systemPrompt,
+        messages,
+      })
+
+      const responseText = result.text
+      reasoning += `\n[Iteration ${iterations}]\n${responseText}\n`
+
+      const { toolCalls, cleanText } = parseToolCalls(responseText)
+
+      if (toolCalls.length === 0) {
+        // No more tool calls, this is the final response
+        finalResponse = cleanText || responseText
+        break
+      }
+
+      // Execute tools
+      const toolResults = await executeTools(toolCalls, octokit, owner, repo)
+
+      for (let i = 0; i < toolCalls.length; i++) {
+        allToolCalls.push({
+          call: toolCalls[i],
+          result: toolResults[i]
+        })
+      }
+
+      // Add tool results to conversation
+      const toolResultsMessage = toolResults.map((r, i) => 
+        `Tool: ${toolCalls[i].tool}\nResult: ${JSON.stringify(r.result || r.error, null, 2)}`
+      ).join('\n\n')
+
+      messages.push({ role: 'assistant', content: responseText })
+      messages.push({ role: 'user', content: `Tool results:\n${toolResultsMessage}\n\nContinue with your response.` })
+    }
+
+    return NextResponse.json({
+      response: finalResponse,
+      reasoning: reasoning.trim(),
+      toolCalls: allToolCalls,
+      iterations,
+    })
   } catch (error) {
     console.error('Agent error:', error)
     const msg = error instanceof Error ? error.message : 'Unknown error'
-    return new Response(JSON.stringify({ error: msg }), { status: 500 })
+    return NextResponse.json({ error: msg }, { status: 500 })
   }
 }

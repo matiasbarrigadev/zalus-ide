@@ -19,16 +19,33 @@ import {
   Bot,
   User,
   PanelLeftClose,
-  PanelLeft
+  PanelLeft,
+  Wrench,
+  Brain,
+  CheckCircle,
+  XCircle
 } from 'lucide-react'
 import { useIDEStore } from '@/store/ide-store'
 import dynamic from 'next/dynamic'
 
-// Dynamically import Monaco Editor to avoid SSR issues
 const MonacoEditor = dynamic(
   () => import('@monaco-editor/react').then((mod) => mod.default),
   { ssr: false, loading: () => <div className="flex items-center justify-center h-full"><Loader2 className="w-6 h-6 animate-spin" /></div> }
 )
+
+interface ToolExecution {
+  call: { tool: string; params: Record<string, string> }
+  result: { tool: string; success: boolean; result?: unknown; error?: string }
+}
+
+interface AgentMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  reasoning?: string
+  toolCalls?: ToolExecution[]
+  iterations?: number
+}
 
 export default function IDEPage() {
   const { data: session, status } = useSession()
@@ -48,10 +65,6 @@ export default function IDEPage() {
     setSelectedFile,
     isLoadingFile,
     setIsLoadingFile,
-    messages,
-    addMessage,
-    isAgentWorking,
-    setIsAgentWorking,
     previewUrl,
     setPreviewUrl,
     sidebarOpen,
@@ -59,8 +72,11 @@ export default function IDEPage() {
   } = useIDEStore()
 
   const [inputMessage, setInputMessage] = useState('')
+  const [messages, setMessages] = useState<AgentMessage[]>([])
+  const [isAgentWorking, setIsAgentWorking] = useState(false)
+  const [expandedReasoning, setExpandedReasoning] = useState<Set<string>>(new Set())
+  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
   const chatEndRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
     if (status === 'unauthenticated') {
@@ -85,10 +101,8 @@ export default function IDEPage() {
       if (response.ok) {
         const data = await response.json()
         if (path === '') {
-          // Root level - set the entire tree
           setFileTree(data.files)
         } else {
-          // Subdirectory - update the children of the node
           updateNodeChildren(path, data.files)
         }
       }
@@ -99,15 +113,12 @@ export default function IDEPage() {
 
   const handleFolderClick = async (node: { path: string; type: string; children?: unknown[] }) => {
     const isExpanded = expandedPaths.has(node.path)
-    
     if (!isExpanded) {
-      // Expanding - load children if not already loaded
       if (!node.children || node.children.length === 0) {
         setNodeLoading(node.path, true)
         await loadFileTree(node.path)
       }
     }
-    
     toggleExpanded(node.path)
   }
 
@@ -140,16 +151,19 @@ export default function IDEPage() {
     }
   }
 
-  const [streamingContent, setStreamingContent] = useState('')
-
   const sendMessage = async () => {
     if (!inputMessage.trim() || isAgentWorking) return
 
     const userMessage = inputMessage.trim()
     setInputMessage('')
-    addMessage({ role: 'user', content: userMessage })
+    
+    const userMsg: AgentMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: userMessage,
+    }
+    setMessages(prev => [...prev, userMsg])
     setIsAgentWorking(true)
-    setStreamingContent('')
 
     try {
       const response = await fetch('/api/agent', {
@@ -166,41 +180,38 @@ export default function IDEPage() {
         }),
       })
 
-      if (response.ok && response.body) {
-        const reader = response.body.getReader()
-        const decoder = new TextDecoder()
-        let fullContent = ''
-
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          
-          const text = decoder.decode(value)
-          fullContent += text
-          setStreamingContent(fullContent)
+      if (response.ok) {
+        const data = await response.json()
+        const assistantMsg: AgentMessage = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: data.response,
+          reasoning: data.reasoning,
+          toolCalls: data.toolCalls,
+          iterations: data.iterations,
         }
-
-        addMessage({ role: 'assistant', content: fullContent })
-        setStreamingContent('')
-        // Refresh file tree after agent action
+        setMessages(prev => [...prev, assistantMsg])
         loadFileTree()
         loadDeploymentStatus()
       } else {
         const errorData = await response.json().catch(() => ({}))
-        addMessage({ 
-          role: 'assistant', 
-          content: `Error: ${errorData.error || 'Hubo un error al procesar tu solicitud.'}` 
-        })
+        const errorMsg: AgentMessage = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: `Error: ${errorData.error || 'Hubo un error al procesar tu solicitud.'}`,
+        }
+        setMessages(prev => [...prev, errorMsg])
       }
     } catch (error) {
       console.error('Error sending message:', error)
-      addMessage({ 
-        role: 'assistant', 
-        content: 'Error de conexión. Por favor verifica tu conexión e intenta de nuevo.' 
-      })
+      const errorMsg: AgentMessage = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: 'Error de conexión. Por favor verifica tu conexión e intenta de nuevo.',
+      }
+      setMessages(prev => [...prev, errorMsg])
     } finally {
       setIsAgentWorking(false)
-      setStreamingContent('')
     }
   }
 
@@ -211,16 +222,31 @@ export default function IDEPage() {
     }
   }
 
+  const toggleReasoning = (id: string) => {
+    setExpandedReasoning(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleTools = (id: string) => {
+    setExpandedTools(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
   const renderFileTree = (nodes: typeof fileTree, depth: number = 0) => {
     return nodes.map((node) => (
       <div key={node.path}>
         <button
           onClick={() => {
-            if (node.type === 'dir') {
-              handleFolderClick(node)
-            } else {
-              loadFileContent(node.path)
-            }
+            if (node.type === 'dir') handleFolderClick(node)
+            else loadFileContent(node.path)
           }}
           className={`w-full flex items-center gap-1 px-2 py-1 text-sm hover:bg-muted rounded transition-colors ${
             selectedFile?.path === node.path ? 'bg-muted' : ''
@@ -278,21 +304,14 @@ export default function IDEPage() {
         </div>
         <div className="ml-auto flex items-center gap-2">
           {previewUrl && (
-            <a
-              href={previewUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-            >
+            <a href={previewUrl} target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
               <ExternalLink className="w-4 h-4" />
               <span className="hidden sm:inline">Preview</span>
             </a>
           )}
-          <button
-            onClick={() => { loadFileTree(); loadDeploymentStatus(); }}
-            className="p-1 text-muted-foreground hover:text-foreground"
-            title="Actualizar"
-          >
+          <button onClick={() => { loadFileTree(); loadDeploymentStatus(); }}
+            className="p-1 text-muted-foreground hover:text-foreground" title="Actualizar">
             <RefreshCw className="w-4 h-4" />
           </button>
         </div>
@@ -308,17 +327,12 @@ export default function IDEPage() {
               <PanelLeftClose className="w-4 h-4" />
             </button>
           </div>
-          <div className="flex-1 overflow-auto p-2">
-            {renderFileTree(fileTree)}
-          </div>
+          <div className="flex-1 overflow-auto p-2">{renderFileTree(fileTree)}</div>
         </div>
 
-        {/* Toggle sidebar button when closed */}
         {!sidebarOpen && (
-          <button
-            onClick={toggleSidebar}
-            className="w-10 flex-shrink-0 border-r border-border flex items-center justify-center hover:bg-muted"
-          >
+          <button onClick={toggleSidebar}
+            className="w-10 flex-shrink-0 border-r border-border flex items-center justify-center hover:bg-muted">
             <PanelLeft className="w-4 h-4" />
           </button>
         )}
@@ -342,14 +356,7 @@ export default function IDEPage() {
                     language={getLanguageFromPath(selectedFile.path)}
                     value={selectedFile.content}
                     theme="vs-dark"
-                    options={{
-                      readOnly: true,
-                      minimap: { enabled: false },
-                      fontSize: 14,
-                      lineNumbers: 'on',
-                      scrollBeyondLastLine: false,
-                      wordWrap: 'on',
-                    }}
+                    options={{ readOnly: true, minimap: { enabled: false }, fontSize: 14, lineNumbers: 'on', scrollBeyondLastLine: false, wordWrap: 'on' }}
                   />
                 )}
               </div>
@@ -365,7 +372,7 @@ export default function IDEPage() {
         </div>
 
         {/* Chat Panel */}
-        <div className="w-96 flex-shrink-0 border-l border-border flex flex-col">
+        <div className="w-[420px] flex-shrink-0 border-l border-border flex flex-col">
           <div className="p-3 border-b border-border flex items-center gap-2">
             <Bot className="w-5 h-5 text-primary" />
             <span className="font-medium">Agente IA</span>
@@ -382,27 +389,81 @@ export default function IDEPage() {
               </div>
             ) : (
               messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`flex gap-3 message-appear ${
-                    message.role === 'user' ? 'flex-row-reverse' : ''
-                  }`}
-                >
+                <div key={message.id} className={`flex gap-3 ${message.role === 'user' ? 'flex-row-reverse' : ''}`}>
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
                     message.role === 'user' ? 'bg-primary' : 'bg-muted'
                   }`}>
-                    {message.role === 'user' ? (
-                      <User className="w-4 h-4 text-primary-foreground" />
-                    ) : (
-                      <Bot className="w-4 h-4" />
-                    )}
+                    {message.role === 'user' ? <User className="w-4 h-4 text-primary-foreground" /> : <Bot className="w-4 h-4" />}
                   </div>
-                  <div className={`flex-1 rounded-lg p-3 text-sm ${
-                    message.role === 'user' 
-                      ? 'bg-primary text-primary-foreground' 
-                      : 'bg-muted'
-                  }`}>
-                    <p className="whitespace-pre-wrap">{message.content}</p>
+                  <div className={`flex-1 space-y-2 ${message.role === 'user' ? '' : ''}`}>
+                    {/* Main content */}
+                    <div className={`rounded-lg p-3 text-sm ${
+                      message.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'
+                    }`}>
+                      <p className="whitespace-pre-wrap">{message.content}</p>
+                    </div>
+
+                    {/* Tool Calls Collapsible */}
+                    {message.toolCalls && message.toolCalls.length > 0 && (
+                      <div className="border border-border rounded-lg overflow-hidden">
+                        <button
+                          onClick={() => toggleTools(message.id)}
+                          className="w-full flex items-center gap-2 p-2 text-sm bg-muted/50 hover:bg-muted transition-colors"
+                        >
+                          <Wrench className="w-4 h-4 text-blue-400" />
+                          <span className="font-medium">Tools ({message.toolCalls.length})</span>
+                          {expandedTools.has(message.id) ? <ChevronDown className="w-4 h-4 ml-auto" /> : <ChevronRight className="w-4 h-4 ml-auto" />}
+                        </button>
+                        {expandedTools.has(message.id) && (
+                          <div className="p-2 space-y-2 text-xs">
+                            {message.toolCalls.map((tc, i) => (
+                              <div key={i} className="border border-border rounded p-2 space-y-1">
+                                <div className="flex items-center gap-2">
+                                  {tc.result.success ? (
+                                    <CheckCircle className="w-3 h-3 text-green-500" />
+                                  ) : (
+                                    <XCircle className="w-3 h-3 text-red-500" />
+                                  )}
+                                  <span className="font-medium">{tc.call.tool}</span>
+                                </div>
+                                <div className="text-muted-foreground">
+                                  <div className="font-medium text-foreground">Call:</div>
+                                  <pre className="bg-background p-1 rounded overflow-auto max-h-20">{JSON.stringify(tc.call.params, null, 2)}</pre>
+                                </div>
+                                <div className="text-muted-foreground">
+                                  <div className="font-medium text-foreground">Result:</div>
+                                  <pre className="bg-background p-1 rounded overflow-auto max-h-32">
+                                    {tc.result.error || JSON.stringify(tc.result.result, null, 2)}
+                                  </pre>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Reasoning Collapsible */}
+                    {message.reasoning && (
+                      <div className="border border-border rounded-lg overflow-hidden">
+                        <button
+                          onClick={() => toggleReasoning(message.id)}
+                          className="w-full flex items-center gap-2 p-2 text-sm bg-muted/50 hover:bg-muted transition-colors"
+                        >
+                          <Brain className="w-4 h-4 text-purple-400" />
+                          <span className="font-medium">Reasoning</span>
+                          {message.iterations && <span className="text-xs text-muted-foreground">({message.iterations} iterations)</span>}
+                          {expandedReasoning.has(message.id) ? <ChevronDown className="w-4 h-4 ml-auto" /> : <ChevronRight className="w-4 h-4 ml-auto" />}
+                        </button>
+                        {expandedReasoning.has(message.id) && (
+                          <div className="p-2 text-xs">
+                            <pre className="whitespace-pre-wrap text-muted-foreground max-h-64 overflow-auto">
+                              {message.reasoning}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))
@@ -412,16 +473,12 @@ export default function IDEPage() {
                 <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center flex-shrink-0">
                   <Bot className="w-4 h-4" />
                 </div>
-                <div className="flex-1 bg-muted rounded-lg p-3 text-sm">
-                  {streamingContent ? (
-                    <p className="whitespace-pre-wrap">{streamingContent}</p>
-                  ) : (
-                    <div className="flex gap-1">
-                      <span className="w-2 h-2 bg-foreground/50 rounded-full typing-dot" />
-                      <span className="w-2 h-2 bg-foreground/50 rounded-full typing-dot" />
-                      <span className="w-2 h-2 bg-foreground/50 rounded-full typing-dot" />
-                    </div>
-                  )}
+                <div className="bg-muted rounded-lg p-3">
+                  <div className="flex gap-1">
+                    <span className="w-2 h-2 bg-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-2 h-2 bg-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-2 h-2 bg-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </div>
                 </div>
               </div>
             )}
@@ -430,27 +487,20 @@ export default function IDEPage() {
 
           {/* Input */}
           <div className="p-4 border-t border-border">
-            <div className="flex gap-2">
-              <textarea
-                ref={inputRef}
-                value={inputMessage}
-                onChange={(e) => setInputMessage(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Describe lo que quieres crear..."
-                className="flex-1 min-h-[80px] max-h-[200px] p-3 rounded-lg border border-input bg-background text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-                disabled={isAgentWorking}
-              />
-            </div>
+            <textarea
+              value={inputMessage}
+              onChange={(e) => setInputMessage(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Describe lo que quieres crear..."
+              className="w-full min-h-[80px] max-h-[200px] p-3 rounded-lg border border-input bg-background text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+              disabled={isAgentWorking}
+            />
             <button
               onClick={sendMessage}
               disabled={!inputMessage.trim() || isAgentWorking}
               className="w-full mt-2 inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-10"
             >
-              {isAgentWorking ? (
-                <Loader2 className="w-4 h-4 animate-spin mr-2" />
-              ) : (
-                <Send className="w-4 h-4 mr-2" />
-              )}
+              {isAgentWorking ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Send className="w-4 h-4 mr-2" />}
               {isAgentWorking ? 'Trabajando...' : 'Enviar'}
             </button>
           </div>
@@ -463,17 +513,8 @@ export default function IDEPage() {
 function getLanguageFromPath(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase()
   const languageMap: Record<string, string> = {
-    ts: 'typescript',
-    tsx: 'typescript',
-    js: 'javascript',
-    jsx: 'javascript',
-    json: 'json',
-    md: 'markdown',
-    css: 'css',
-    html: 'html',
-    py: 'python',
-    yml: 'yaml',
-    yaml: 'yaml',
+    ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
+    json: 'json', md: 'markdown', css: 'css', html: 'html', py: 'python', yml: 'yaml', yaml: 'yaml',
   }
   return languageMap[ext || ''] || 'plaintext'
 }
