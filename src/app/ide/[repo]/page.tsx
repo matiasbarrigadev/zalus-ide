@@ -40,6 +40,8 @@ export default function IDEPage() {
   const {
     fileTree,
     setFileTree,
+    updateNodeChildren,
+    setNodeLoading,
     expandedPaths,
     toggleExpanded,
     selectedFile,
@@ -82,11 +84,31 @@ export default function IDEPage() {
       const response = await fetch(`/api/github/files?owner=${owner}&repo=${repoName}&path=${path}`)
       if (response.ok) {
         const data = await response.json()
-        setFileTree(data.files)
+        if (path === '') {
+          // Root level - set the entire tree
+          setFileTree(data.files)
+        } else {
+          // Subdirectory - update the children of the node
+          updateNodeChildren(path, data.files)
+        }
       }
     } catch (error) {
       console.error('Error loading file tree:', error)
     }
+  }
+
+  const handleFolderClick = async (node: { path: string; type: string; children?: unknown[] }) => {
+    const isExpanded = expandedPaths.has(node.path)
+    
+    if (!isExpanded) {
+      // Expanding - load children if not already loaded
+      if (!node.children || node.children.length === 0) {
+        setNodeLoading(node.path, true)
+        await loadFileTree(node.path)
+      }
+    }
+    
+    toggleExpanded(node.path)
   }
 
   const loadDeploymentStatus = async () => {
@@ -177,7 +199,7 @@ export default function IDEPage() {
         <button
           onClick={() => {
             if (node.type === 'dir') {
-              toggleExpanded(node.path)
+              handleFolderClick(node)
             } else {
               loadFileContent(node.path)
             }
@@ -189,7 +211,9 @@ export default function IDEPage() {
         >
           {node.type === 'dir' ? (
             <>
-              {expandedPaths.has(node.path) ? (
+              {node.isLoading ? (
+                <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
+              ) : expandedPaths.has(node.path) ? (
                 <ChevronDown className="w-4 h-4 text-muted-foreground" />
               ) : (
                 <ChevronRight className="w-4 h-4 text-muted-foreground" />
@@ -204,7 +228,7 @@ export default function IDEPage() {
           )}
           <span className="truncate">{node.name}</span>
         </button>
-        {node.type === 'dir' && expandedPaths.has(node.path) && node.children && (
+        {node.type === 'dir' && expandedPaths.has(node.path) && node.children && node.children.length > 0 && (
           <div>{renderFileTree(node.children, depth + 1)}</div>
         )}
       </div>

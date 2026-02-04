@@ -37,6 +37,8 @@ interface IDEState {
   // File tree
   fileTree: FileNode[]
   setFileTree: (tree: FileNode[]) => void
+  updateNodeChildren: (path: string, children: FileNode[]) => void
+  setNodeLoading: (path: string, loading: boolean) => void
   expandedPaths: Set<string>
   toggleExpanded: (path: string) => void
 
@@ -72,6 +74,36 @@ export const useIDEStore = create<IDEState>((set, get) => ({
   // File tree
   fileTree: [],
   setFileTree: (tree) => set({ fileTree: tree }),
+  updateNodeChildren: (path, children) =>
+    set((state) => {
+      const updateChildren = (nodes: FileNode[]): FileNode[] => {
+        return nodes.map((node) => {
+          if (node.path === path) {
+            return { ...node, children, isLoading: false }
+          }
+          if (node.children) {
+            return { ...node, children: updateChildren(node.children) }
+          }
+          return node
+        })
+      }
+      return { fileTree: updateChildren(state.fileTree) }
+    }),
+  setNodeLoading: (path, loading) =>
+    set((state) => {
+      const setLoading = (nodes: FileNode[]): FileNode[] => {
+        return nodes.map((node) => {
+          if (node.path === path) {
+            return { ...node, isLoading: loading }
+          }
+          if (node.children) {
+            return { ...node, children: setLoading(node.children) }
+          }
+          return node
+        })
+      }
+      return { fileTree: setLoading(state.fileTree) }
+    }),
   expandedPaths: new Set<string>(),
   toggleExpanded: (path) =>
     set((state) => {
